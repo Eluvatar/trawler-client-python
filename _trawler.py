@@ -24,22 +24,23 @@ import threading
 from Queue import Queue
 from collections import namedtuple
 
+def is_open(tsock):
+    return not tsock.closed
+
 class Connection(object):
     """
     A connection to a Trawler daemon. Has a worker thread which owns
     all interaction with the zmq socket pointed at said daemon.
     """
     def __init__(self, host, port, user_agent_str):
-        self.sock = zmq.Context.instance().socket(zmq.REQ)
         self.url = "tcp://{0}:{1}".format(host, port)
         self.user_agent = user_agent_str
-        self.opened = False
         self.req_id = 0
         self.req_id_lock = threading.Lock()
         self.callbacks = dict()
         self.opening = threading.Event()
         self.queue = Queue()
-        self.queue_cb = dict()
+        self.ack_callbacks = dict()
         tname = "Connection {0} worker".format(id(self))
         thread = threading.Thread(name=tname, target=self.worker)
         thread.daemon = True
@@ -49,12 +50,13 @@ class Connection(object):
         qsock = zmq.Context.instance().socket(zmq.PULL)
         qsock.bind("inproc://request_queue-"+str(id(self)))
         poller = zmq.Poller()
-        poller.register(self.sock, zmq.POLLIN)
+        tsock = zmq.Context.instance().socket(zmq.REQ)
+        poller.register(tsock, zmq.POLLIN)
         poller.register(qsock, zmq.POLLIN)
         while(True):
             self.opening.wait()
-            self.open()
-            while self.is_open():
+            self.open(tsock)
+            while is_open(tsock):
                 socks = dict(poller.poll())
                 if qsock in socks and socks[qsock] == zmq.POLLIN:
                     qsock.recv()
@@ -62,37 +64,32 @@ class Connection(object):
                         (todo, args, kwargs) = self.queue.get_nowait()
                         todo(*args, **kwargs)
                         self.queue.task_done()
-                if self.sock in socks and socks[self.sock] == zmq.POLLIN:
-                    self.receive()
+                if tsock in socks and socks[tsock] == zmq.POLLIN:
+                    self.receive(tsock)
             self.opening.clear()
 
-    def receive(self):
-        mtype = self.sock.recv()
+    def receive(self, tsock):
+        mtype = tsock.recv()
         {
         'ack' : self.recv_ack,
         'nack' : self.recv_nack,
         'response' : self.recv_response,
-        }.get(mtype,self.recv_invalid)()
+        }.get(mtype,self.recv_invalid)(tsock)
 
-    def recv_ack(self):
-        (req_id, result) = self.sock.recv_multipart()
-        (done, out) = self.queue_cb[int(req_id)]
-        del self.queue_cb[req_id]
-        out[0] = int(result)
-        done.set()
-
-    def recv_nack(self):
-        (req_id_s, result) = self.sock.recv_multipart()
+    def recv_ack(self, tsock):
+        (req_id_s, result) = tsock.recv_multipart()
         req_id = int(req_id_s)
-        (done, out) = self.queue_cb[req_id]
-        del self.queue_cb[req_id]
-        out[0] = int(result)
+        self.ack_callbacks[req_id](result)
+        del self.ack_callbacks[req_id]
+        return (req_id, result)
+
+    def recv_nack(self, tsock):
+        (req_id, result) = self.recv_ack(tsock)
         self.callbacks[req_id](Response(result=result))
         del self.callbacks[req_id]
-        done.set()
 
-    def recv_response(self):
-        (req_id_s, result, response) = self.sock.recv_multipart()
+    def recv_response(self, tsock):
+        (req_id_s, result, response) = tsock.recv_multipart()
         req_id = int(req_id_s)
         self.callbacks[req_id](Response(result=int(result), response=response))
         del self.callbacks[req_id]
@@ -104,46 +101,51 @@ class Connection(object):
 
     def require_open(self, dep_fn):
         def impl_fn(*args, **kwargs):
-            if not self.is_open():
-                self.opening.set()
+            self.opening.set()
             dep_fn(*args, **kwargs)
         return impl_fn
 
-    def queued(self, dep_fn):
-        def impl_fn(*args, **kwargs):
-            with self.req_id_lock:
-                req_id = self.req_id
-                self.req_id += 1
-            kwargs['req_id'] = req_id
-            done = threading.Event()
-            ret = [] # TODO result enum
-            self.queue_cb[self.req_id] = (done, ret,)
-            self.queue.put((dep_fn, args, kwargs,))
-            qsock = zmq.Context.instance().socket(zmq.PUSH)
-            qsock.connect("inproc://request_queue-"+str(id(self)))
-            qsock.send("")
-            done.wait()
-            return ret[0]
-        return impl_fn
+    def open(self, tsock):
+        tsock.connect(self.url)
 
-    def open(self):
-        self.sock.connect(self.url)
-        self.opened = True
-        self.opening.set()
+    def enqueue(self, qfn):
+        done = threading.Event()
+        ret = []
+        def impl_fn(tsock):
+            ret[0] = qfn(tsock)
+            done.set()
+        self.queue.put(impl_fn)
+        qsock = zmq.Context.instance().socket(zmq.PUSH)
+        qsock.connect("inproc://request_queue-"+str(id(self)))
+        qsock.send("")
+        done.wait()
+        return ret[0]
 
     def is_open(self):
-        return self.opened and not self.sock.closed
+        return self.enqueue(is_open)
 
     def __nonzero__(self):
         return self.is_open()
 
     @require_open
-    @queued
-    def request_async(self, req_id, callback, method, path, query=None,
+    def request_async(self, callback, method, path, query=None,
                       session=None, headers=False):
-        self.callbacks[req_id] = callback
-        tup = (str(req_id), method, path, query, session, headers,)
-        self.sock.send_multipart(tup)
+        done = threading.Event()
+        ret = []
+        with self.req_id_lock:
+            req_id = self.req_id
+            self.req_id += 1
+        def ack_fn(result):
+            ret[0] = int(result)
+            done.set()
+        def send_fn(tsock):
+            self.callbacks[req_id] = callback
+            self.ack_callbacks[req_id] = ack_fn
+            tup = (str(req_id), method, path, query, session, headers,)
+            tsock.send_multipart(tup)
+        self.enqueue(send_fn)
+        done.wait()
+        return ret[0]
 
     def request_headers_async(self, callback, method, path, query=None,
                               session=None):
