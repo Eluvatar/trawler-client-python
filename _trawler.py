@@ -99,8 +99,9 @@ class Connection(object):
         # invalid object and raise exception, killing worker thread?
         pass
 
-    def require_open(self, dep_fn):
+    def require_open(dep_fn):
         def impl_fn(*args, **kwargs):
+            self=args[0]
             self.opening.set()
             dep_fn(*args, **kwargs)
         return impl_fn
@@ -165,18 +166,22 @@ class Connection(object):
         return self.request(method, path, query, session, True)
 
 class Response(namedtuple('Response','result response')):
+    """
+    A Response from NationStates.net via Trawler
+    """
     def read(self):
         return self.response
 
-default_connection.conn = None
 def default_connection():
     if not default_connection.conn:
         default_connection.conn = \
             Connection('localhost', 5557, default_user_agent())
     return default_connection.conn
+default_connection.conn = None
 
 def default_user_agent():
     return "trawler "+version()
 
+from _version import GITHASH
 def version():
-    return "v0.0.1 (NIL)"
+    return "v0.0.1 (https://github.com/Eluvatar/trawler-client-py/tree/{0})".format(GITHASH)

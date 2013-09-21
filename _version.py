@@ -1,1 +1,1 @@
-GITHASH="$Id$"[4:-1]
+GITHASH="$Id$"[5:-2]
