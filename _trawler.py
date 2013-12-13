@@ -19,6 +19,8 @@
   this module directly, import the 'trawler' module instead.
 """
 
+import trawler_pb2 as protocol
+
 import zmq
 import threading
 from Queue import Queue
@@ -68,33 +70,36 @@ class Connection(object):
                     self.receive(tsock)
             self.opening.clear()
 
+    assert(protocol.Reply.Response == 0)
+    assert(protocol.Reply.Ack == 1) 
+    assert(protocol.Reply.Nack == 2)
     def receive(self, tsock):
-        mtype = tsock.recv()
-        {
-        'ack' : self.recv_ack,
-        'nack' : self.recv_nack,
-        'response' : self.recv_response,
-        }.get(mtype,self.recv_invalid)(tsock)
+        reply = protocol.Reply.ParseFromString(tsock.recv())
+        if( reply.reply_type < 0 or reply.reply_type > 2 ):
+            self.invalid(reply)
+            return
+        [ self.response, self.ack, self.nack ][reply.reply_type](reply)
 
-    def recv_ack(self, tsock):
-        (req_id_s, result) = tsock.recv_multipart()
-        req_id = int(req_id_s)
-        self.ack_callbacks[req_id](result)
-        del self.ack_callbacks[req_id]
-        return (req_id, result)
+    def ack(self, reply):
+        self.ack_callbacks[reply.req_id](reply.result)
+        del self.ack_callbacks[reply.req_id]
 
-    def recv_nack(self, tsock):
-        (req_id, result) = self.recv_ack(tsock)
-        self.callbacks[req_id](Response(result=result))
+    def nack(self, reply):
+        self.ack(self, reply)
+        self.callbacks[reply.req_id](Response(result=reply.result))
+        del self.callbacks[reply.req_id]
+
+    def response(self, reply):
+        msg = tsock.multipart()
+        req_id = reply.req_id
+        if reply.headers:
+            response = reply.headers + reply.response
+        else:
+            response = reply.response
+        self.callbacks[req_id](Response(result=reply.result, response=response))
         del self.callbacks[req_id]
 
-    def recv_response(self, tsock):
-        (req_id_s, result, response) = tsock.recv_multipart()
-        req_id = int(req_id_s)
-        self.callbacks[req_id](Response(result=int(result), response=response))
-        del self.callbacks[req_id]
-
-    def recv_invalid(self):
+    def invalid(self, reply):
         #TODO handle failure -- perhaps call all callbacks with an
         # invalid object and raise exception, killing worker thread?
         pass
@@ -133,6 +138,7 @@ class Connection(object):
                       session=None, headers=False):
         done = threading.Event()
         ret = []
+        method = protocol.Request.Method.Value(method.upper())
         with self.req_id_lock:
             req_id = self.req_id
             self.req_id += 1
@@ -142,8 +148,9 @@ class Connection(object):
         def send_fn(tsock):
             self.callbacks[req_id] = callback
             self.ack_callbacks[req_id] = ack_fn
-            tup = (str(req_id), method, path, query, session, headers,)
-            tsock.send_multipart(tup)
+            req = protocol.Request(id=req_id,method=method,path=path,
+                                   query=query,session=session,headers=headers)
+            tsock.send(req.SerializeToString())
         self.enqueue(send_fn)
         done.wait()
         return ret[0]

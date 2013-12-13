@@ -1,3 +1,4 @@
 *.pyc
 *.swp
 *~
+trawler_pb2.py
