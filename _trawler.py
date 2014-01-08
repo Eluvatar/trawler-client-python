@@ -29,6 +29,10 @@ from collections import namedtuple
 def is_open(tsock):
     return not tsock.closed
 
+def kwargs_filter(*args, **kwargs):
+    kwargs2 = dict((k, v) for k, v in kwargs.iteritems() if v)
+    return kwargs2
+
 class Connection(object):
     """
     A connection to a Trawler daemon. Has a worker thread which owns
@@ -37,10 +41,11 @@ class Connection(object):
     def __init__(self, host, port, user_agent_str):
         self.url = "tcp://{0}:{1}".format(host, port)
         self.user_agent = user_agent_str
-        self.req_id = 0
+        self.req_id = 1
         self.req_id_lock = threading.Lock()
         self.callbacks = dict()
         self.opening = threading.Event()
+        self.opened = threading.Event()
         self.queue = Queue()
         self.ack_callbacks = dict()
         tname = "Connection {0} worker".format(id(self))
@@ -52,29 +57,32 @@ class Connection(object):
         qsock = zmq.Context.instance().socket(zmq.PULL)
         qsock.bind("inproc://request_queue-"+str(id(self)))
         poller = zmq.Poller()
-        tsock = zmq.Context.instance().socket(zmq.REQ)
+        tsock = zmq.Context.instance().socket(zmq.DEALER)
         poller.register(tsock, zmq.POLLIN)
         poller.register(qsock, zmq.POLLIN)
         while(True):
             self.opening.wait()
             self.open(tsock)
+            self.opened.set()
             while is_open(tsock):
                 socks = dict(poller.poll())
                 if qsock in socks and socks[qsock] == zmq.POLLIN:
                     qsock.recv()
                     while not self.queue.empty():
-                        (todo, args, kwargs) = self.queue.get_nowait()
-                        todo(*args, **kwargs)
+                        todo = self.queue.get_nowait()
+                        todo(tsock)
                         self.queue.task_done()
                 if tsock in socks and socks[tsock] == zmq.POLLIN:
                     self.receive(tsock)
             self.opening.clear()
+            self.opened.clear()
 
     assert(protocol.Reply.Response == 0)
     assert(protocol.Reply.Ack == 1) 
     assert(protocol.Reply.Nack == 2)
     def receive(self, tsock):
-        reply = protocol.Reply.ParseFromString(tsock.recv())
+        reply = protocol.Reply()
+        reply.ParseFromString(tsock.recv_multipart()[-1])
         if( reply.reply_type < 0 or reply.reply_type > 2 ):
             self.invalid(reply)
             return
@@ -90,7 +98,6 @@ class Connection(object):
         del self.callbacks[reply.req_id]
 
     def response(self, reply):
-        msg = tsock.multipart()
         req_id = reply.req_id
         if reply.headers:
             response = reply.headers + reply.response
@@ -108,7 +115,8 @@ class Connection(object):
         def impl_fn(*args, **kwargs):
             self=args[0]
             self.opening.set()
-            dep_fn(*args, **kwargs)
+            self.opened.wait()
+            return dep_fn(*args, **kwargs)
         return impl_fn
 
     def open(self, tsock):
@@ -116,7 +124,7 @@ class Connection(object):
 
     def enqueue(self, qfn):
         done = threading.Event()
-        ret = []
+        ret = [None]
         def impl_fn(tsock):
             ret[0] = qfn(tsock)
             done.set()
@@ -137,7 +145,7 @@ class Connection(object):
     def request_async(self, callback, method, path, query=None,
                       session=None, headers=False):
         done = threading.Event()
-        ret = []
+        ret = [0]
         method = protocol.Request.Method.Value(method.upper())
         with self.req_id_lock:
             req_id = self.req_id
@@ -148,8 +156,9 @@ class Connection(object):
         def send_fn(tsock):
             self.callbacks[req_id] = callback
             self.ack_callbacks[req_id] = ack_fn
-            req = protocol.Request(id=req_id,method=method,path=path,
-                                   query=query,session=session,headers=headers)
+            kwf = kwargs_filter
+            req = protocol.Request(**kwf(id=req_id,method=method,path=path,
+                                         query=query,session=session,headers=headers))
             tsock.send(req.SerializeToString())
         self.enqueue(send_fn)
         done.wait()
@@ -161,11 +170,11 @@ class Connection(object):
 
     def request(self, method, path, query=None, session=None, headers=False):
         fulfillment = threading.Event()
-        retval = []
+        retval = [0]
         def callback(response):
             retval[0] = response
             fulfillment.set()
-        self.request_async(method, callback, path, query, session, headers)
+        self.request_async(callback, method, path, query, session, headers)
         fulfillment.wait()
         return retval[0]
 
