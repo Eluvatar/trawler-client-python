@@ -196,8 +196,7 @@ def default_connection():
 default_connection.conn = None
 
 def default_user_agent():
-    return "trawler "+version()
+    return "trawler (https://github.com/Eluvatar/trawler-client-python/) "+version()
 
-from _version import GITHASH
 def version():
-    return "v0.0.1 (https://github.com/Eluvatar/trawler-client-py/tree/{0})".format(GITHASH)
+    return "v0.0.1"
