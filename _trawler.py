@@ -25,6 +25,7 @@ import zmq
 import threading
 from Queue import Queue
 from collections import namedtuple
+from StringIO import StringIO
 
 def is_open(tsock):
     return not tsock.closed
@@ -63,6 +64,7 @@ class Connection(object):
         while(True):
             self.opening.wait()
             self.open(tsock)
+            self.login(tsock)
             self.opened.set()
             while is_open(tsock):
                 socks = dict(poller.poll())
@@ -76,6 +78,10 @@ class Connection(object):
                     self.receive(tsock)
             self.opening.clear()
             self.opened.clear()
+
+    def login(self, tsock):
+        login_message = protocol.Login(user_agent=self.user_agent)
+        tsock.send(login_message.SerializeToString())
 
     assert(protocol.Reply.Response == 0)
     assert(protocol.Reply.Ack == 1) 
@@ -185,18 +191,13 @@ class Response(namedtuple('Response','result response')):
     """
     A Response from NationStates.net via Trawler
     """
-    def read(self):
-        return self.response
+    def __new__(self, result, response):
+        self.strio = StringIO(response)
+        return tuple.__new__(Response, (result, response)) 
 
-def default_connection():
-    if not default_connection.conn:
-        default_connection.conn = \
-            Connection('localhost', 5557, default_user_agent())
-    return default_connection.conn
-default_connection.conn = None
+    def read(self,size=-1):
+        return self.strio.read(size)
 
-def default_user_agent():
-    return "trawler (https://github.com/Eluvatar/trawler-client-python/) "+version()
 
 def version():
-    return "v0.0.1"
+    return "v0.1.0"

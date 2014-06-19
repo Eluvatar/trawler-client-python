@@ -29,7 +29,7 @@
 import _trawler
 
 def _instance():
-    return _trawler.default_connection()
+    return default_connection()
 
 def request(*args, **kwargs):
     """
@@ -78,7 +78,23 @@ def request_async(*args, **kwargs):
     return _instance().request_async(*args, **kwargs)
 def request_headers_async(*args, **kwargs):
     return _instance().request_headers_async(*args, **kwargs)
-def connection(*args, **kwargs):
-    return _trawler.Connection(*args, **kwargs)
+
+def connection(user_agent):
+    return _trawler.Connection('localhost', 5557, user_agent)
+
 def version():
     return _trawler.version()
+
+def default_connection():
+    if not default_connection.conn:
+        default_connection.conn = \
+            connection(default_user_agent())
+    return default_connection.conn
+default_connection.conn = None
+
+user_agent = None
+def default_user_agent():
+    if user_agent:
+        return user_agent
+    else:
+        raise Exception("User Agent required")
