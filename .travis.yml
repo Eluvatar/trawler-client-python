@@ -1,0 +1,5 @@
+language: python
+python:
+  - "2.7"
+install: "protoc --proto_path=./protocol/ --python_out=. ./protocol/trawler.proto"
+script: #??
