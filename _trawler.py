@@ -89,8 +89,13 @@ class Connection(object):
     def receive(self, tsock):
         reply = protocol.Reply()
         reply.ParseFromString(tsock.recv_multipart()[-1])
+        # TODO print reply in debug mode of some kind
+        # print reply
         if( reply.reply_type < 0 or reply.reply_type > 2 ):
-            self.invalid(reply)
+            if( reply.reply_type == protocol.Reply.Logout ):
+                self.logout(reply, tsock)
+            else:
+                self.invalid(reply, tsock)
             return
         [ self.response, self.ack, self.nack ][reply.reply_type](reply)
 
@@ -112,10 +117,23 @@ class Connection(object):
         self.callbacks[req_id](Response(result=reply.result, response=response))
         del self.callbacks[req_id]
 
-    def invalid(self, reply):
-        #TODO handle failure -- perhaps call all callbacks with an
-        # invalid object and raise exception, killing worker thread?
-        pass
+    def logout(self, reply, tsock):
+        for req_id in self.ack_callbacks.keys():
+            self.ack_callbacks[req_id](reply.result)
+            del self.ack_callbacks[req_id]
+        for req_id in self.callbacks.keys():
+            self.callbacks[req_id](Response(result=reply.result, response=''))
+            del self.callbacks[req_id]
+        tsock.close()
+
+    def invalid(self, reply, tsock):
+        for req_id in self.ack_callbacks.keys():
+            self.ack_callbacks[req_id](500)
+            del self.ack_callbacks[req_id]
+        for req_id in self.callbacks.keys():
+            self.callbacks[req_id](Response(result=500, response=''))
+            del self.callbacks[req_id]
+        tsock.close()
 
     def require_open(dep_fn):
         def impl_fn(*args, **kwargs):
