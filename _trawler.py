@@ -34,6 +34,11 @@ def kwargs_filter(*args, **kwargs):
     kwargs2 = dict((k, v) for k, v in kwargs.iteritems() if v)
     return kwargs2
 
+class Request(namedtuple('Request','id request ack_callback acked callback')):
+    """
+    A request of the library to make an HTTP request of ns via trawler.
+    """
+
 class Connection(object):
     """
     A connection to a Trawler daemon. Has a worker thread which owns
@@ -44,11 +49,10 @@ class Connection(object):
         self.user_agent = user_agent_str
         self.req_id = 1
         self.req_id_lock = threading.Lock()
-        self.callbacks = dict()
+        self.reqs = dict()
         self.opening = threading.Event()
         self.opened = threading.Event()
         self.queue = Queue()
-        self.ack_callbacks = dict()
         tname = "Connection {0} worker".format(id(self))
         thread = threading.Thread(name=tname, target=self.worker)
         thread.daemon = True
@@ -86,6 +90,7 @@ class Connection(object):
     assert(protocol.Reply.Response == 0)
     assert(protocol.Reply.Ack == 1) 
     assert(protocol.Reply.Nack == 2)
+    assert(protocol.Reply.Logout == 3)
     def receive(self, tsock):
         reply = protocol.Reply()
         reply.ParseFromString(tsock.recv_multipart()[-1])
@@ -100,13 +105,14 @@ class Connection(object):
         [ self.response, self.ack, self.nack ][reply.reply_type](reply)
 
     def ack(self, reply):
-        self.ack_callbacks[reply.req_id](reply.result)
-        del self.ack_callbacks[reply.req_id]
+        req = self.reqs[reply.req_id]
+        req.acked = True
+        req.ack_callback(reply.result)
 
     def nack(self, reply):
         self.ack(self, reply)
-        self.callbacks[reply.req_id](Response(result=reply.result))
-        del self.callbacks[reply.req_id]
+        self.reqs[reply.req_id].callback(Response(result=reply.result))
+        del self.reqs[reply.req_id]
 
     def response(self, reply):
         req_id = reply.req_id
@@ -114,25 +120,26 @@ class Connection(object):
             response = reply.headers + reply.response
         else:
             response = reply.response
-        self.callbacks[req_id](Response(result=reply.result, response=response))
-        del self.callbacks[req_id]
+        req = self.reqs[req_id]
+        req.callback(Response(result=reply.result, response=response))
+        del self.reqs[reply.req_id]
 
     def logout(self, reply, tsock):
-        for req_id in self.ack_callbacks.keys():
-            self.ack_callbacks[req_id](reply.result)
-            del self.ack_callbacks[req_id]
-        for req_id in self.callbacks.keys():
-            self.callbacks[req_id](Response(result=reply.result, response=''))
-            del self.callbacks[req_id]
+        for req_id in self.reqs.keys():
+            req = self.reqs[req_id]
+            if not self.acked:
+                 req.ack_callback[req_id](reply.result)
+            req.callback(Response(result=reply.result, response=''))
+            del self.reqs[req_id]
         tsock.close()
 
     def invalid(self, reply, tsock):
-        for req_id in self.ack_callbacks.keys():
-            self.ack_callbacks[req_id](500)
-            del self.ack_callbacks[req_id]
-        for req_id in self.callbacks.keys():
-            self.callbacks[req_id](Response(result=500, response=''))
-            del self.callbacks[req_id]
+        for req_id in self.reqs.keys():
+            req = self.reqs[req_id]
+            if not self.acked:
+                 req.ack_callback[req_id](530)
+            req.callback(Response(530, response=''))
+            del self.reqs[req_id]
         tsock.close()
 
     def require_open(dep_fn):
@@ -178,11 +185,10 @@ class Connection(object):
             ret[0] = int(result)
             done.set()
         def send_fn(tsock):
-            self.callbacks[req_id] = callback
-            self.ack_callbacks[req_id] = ack_fn
             kwf = kwargs_filter
             req = protocol.Request(**kwf(id=req_id,method=method,path=path,
                                          query=query,session=session,headers=headers))
+            self.reqs[req_id] = Request(req_id, req, ack_fn, False, callback)
             tsock.send(req.SerializeToString())
         self.enqueue(send_fn)
         done.wait()
