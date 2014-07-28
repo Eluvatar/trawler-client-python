@@ -124,22 +124,31 @@ class Connection(object):
         req.callback(Response(result=reply.result, response=response))
         del self.reqs[reply.req_id]
 
-    def logout(self, reply, tsock):
+    def resubmit_all(self, tsock):
+        def localack(result):
+            pass
+        for req_id in self.reqs.keys():
+            req = self.reqs[req_id]
+            if self.acked:
+                 req.ack_callback[req_id] = localack
+            def todo():
+                 tsock.send( req.request.SerializeToString() )
+            self.enqueue(todo)
+
+    def cancel_all(self, tsock, result_code):
         for req_id in self.reqs.keys():
             req = self.reqs[req_id]
             if not self.acked:
-                 req.ack_callback[req_id](reply.result)
-            req.callback(Response(result=reply.result, response=''))
+                 req.ack_callback[req_id](result_code)
+            req.callback(Response(result_code, response=''))
             del self.reqs[req_id]
+
+    def logout(self, reply, tsock):
         tsock.close()
+        self.resubmit_all(tsock)
 
     def invalid(self, reply, tsock):
-        for req_id in self.reqs.keys():
-            req = self.reqs[req_id]
-            if not self.acked:
-                 req.ack_callback[req_id](530)
-            req.callback(Response(530, response=''))
-            del self.reqs[req_id]
+        self.cancel_all(tsock, 530)
         tsock.close()
 
     def require_open(dep_fn):
@@ -186,10 +195,11 @@ class Connection(object):
             done.set()
         def send_fn(tsock):
             kwf = kwargs_filter
-            req = protocol.Request(**kwf(id=req_id,method=method,path=path,
-                                         query=query,session=session,headers=headers))
-            self.reqs[req_id] = Request(req_id, req, ack_fn, False, callback)
-            tsock.send(req.SerializeToString())
+            request = protocol.Request(**kwf(id=req_id,method=method,path=path,
+                                             query=query,session=session,
+                                             headers=headers))
+            self.reqs[req_id]=Request(req_id, request, ack_fn, False, callback)
+            tsock.send(request.SerializeToString())
         self.enqueue(send_fn)
         done.wait()
         return ret[0]
