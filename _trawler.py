@@ -44,6 +44,7 @@ class Connection(object):
         self.user_agent = user_agent_str
         self.req_id = 1
         self.req_id_lock = threading.Lock()
+        self.bodys = dict()
         self.callbacks = dict()
         self.opening = threading.Event()
         self.opened = threading.Event()
@@ -110,19 +111,29 @@ class Connection(object):
 
     def response(self, reply):
         req_id = reply.req_id
-        if reply.headers:
-            response = reply.headers + reply.response
-        else:
-            response = reply.response
-        self.callbacks[req_id](Response(result=reply.result, response=response))
-        del self.callbacks[req_id]
+        if req_id in self.callbacks:
+            response = Response(result=reply.result, headers=reply.headers,
+                                response=reply.response)
+            self.bodys[req_id] = response
+            self.callbacks[req_id](response)
+            del self.callbacks[req_id]
+        elif reply.response:
+            response = self.bodys[req_id]
+            with response.read_lock:
+                pos = response.body.tell()
+                response.body.seek(0,2)
+                response.body.write(reply.response)
+                response.body.seek(pos)
+        if not reply.continued:
+            self.bodys[req_id]._complete()
+            del self.bodys[req_id]
 
     def logout(self, reply, tsock):
         for req_id in self.ack_callbacks.keys():
             self.ack_callbacks[req_id](reply.result)
             del self.ack_callbacks[req_id]
         for req_id in self.callbacks.keys():
-            self.callbacks[req_id](Response(result=reply.result, response=''))
+            self.callbacks[req_id](Response(result=reply.result))
             del self.callbacks[req_id]
         tsock.close()
 
@@ -131,7 +142,7 @@ class Connection(object):
             self.ack_callbacks[req_id](500)
             del self.ack_callbacks[req_id]
         for req_id in self.callbacks.keys():
-            self.callbacks[req_id](Response(result=500, response=''))
+            self.callbacks[req_id](Response(result=500))
             del self.callbacks[req_id]
         tsock.close()
 
@@ -205,17 +216,42 @@ class Connection(object):
     def request_headers(self, method, path, query=None, session=None):
         return self.request(method, path, query, session, True)
 
-class Response(namedtuple('Response','result response')):
+class Response():
     """
     A Response from NationStates.net via Trawler
     """
-    def __new__(self, result, response):
-        self.strio = StringIO(response)
-        return tuple.__new__(Response, (result, response)) 
+    def __init__(self, result, headers=None, response=''):
+        self.result = result
+        if headers:
+            self.headers = mimetools.Message( StringIO(reply.headers) )
+        else:
+            self.headers = None
+        self.body = StringIO(response or '')
+        self.read_lock = threading.Lock()
+        self.done = threading.Event()
+
+    def seek(self,pos,from_what=0):
+        self.body.seek(pos,from_what)
 
     def read(self,size=-1):
-        return self.strio.read(size)
+        with self.read_lock:
+            pos = self.body.tell()
+            s = self.body.read(size)
+        if size == -1 or len(s) < size:
+            self.done.wait()
+            with self.read_lock:
+                self.seek(pos)
+                return self.body.read(size)
+        return s
+    
+    def info(self):
+        return self.headers
 
+    def getcode(self):
+        return self.result
+    
+    def _complete(self):
+        self.done.set()
 
 def version():
     return "v0.1.0"
