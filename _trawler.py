@@ -26,6 +26,7 @@ import threading
 from Queue import Queue
 from collections import namedtuple
 from StringIO import StringIO
+import mimetools
 
 def is_open(tsock):
     return not tsock.closed
@@ -44,7 +45,7 @@ class Connection(object):
         self.user_agent = user_agent_str
         self.req_id = 1
         self.req_id_lock = threading.Lock()
-        self.bodys = dict()
+        self.responses = dict()
         self.callbacks = dict()
         self.opening = threading.Event()
         self.opened = threading.Event()
@@ -114,19 +115,18 @@ class Connection(object):
         if req_id in self.callbacks:
             response = Response(result=reply.result, headers=reply.headers,
                                 response=reply.response)
-            self.bodys[req_id] = response
+            self.responses[req_id] = response
             self.callbacks[req_id](response)
             del self.callbacks[req_id]
+        elif reply.headers:
+            response = self.responses[req_id]
+            response.add_headers(reply.headers)
         elif reply.response:
-            response = self.bodys[req_id]
-            with response.read_lock:
-                pos = response.body.tell()
-                response.body.seek(0,2)
-                response.body.write(reply.response)
-                response.body.seek(pos)
+            response = self.responses[req_id]
+            response.add_body(reply.response)
         if not reply.continued:
-            self.bodys[req_id]._complete()
-            del self.bodys[req_id]
+            self.responses[req_id]._complete()
+            del self.responses[req_id]
 
     def logout(self, reply, tsock):
         for req_id in self.ack_callbacks.keys():
@@ -216,6 +216,30 @@ class Connection(object):
     def request_headers(self, method, path, query=None, session=None):
         return self.request(method, path, query, session, True)
 
+class TStringIO(StringIO):
+    def __init__(self, *args, **kwargs):
+        StringIO.__init__(self, *args, **kwargs)
+        self.lock = threading.Lock()
+        self.done = threading.Event()
+    
+    def append(self,append_str):
+            with self.lock:
+                pos = self.tell()
+                self.seek(0,2)
+                self.write(append_str)
+                self.seek(pos)
+    
+    def read(self,size=-1):
+        with self.lock:
+            pos = self.tell()
+            s = StringIO.read(self,size)
+        if not self.done.isSet() and ( size == -1 or len(s) < size):
+            self.done.wait()
+            with self.lock:
+                self.seek(pos)
+                return StringIO.read(self,size)
+        return s
+
 class Response():
     """
     A Response from NationStates.net via Trawler
@@ -223,35 +247,37 @@ class Response():
     def __init__(self, result, headers=None, response=''):
         self.result = result
         if headers:
-            self.headers = mimetools.Message( StringIO(reply.headers) )
+            self.header_buf = TStringIO('\r\n'.join(headers.split('\r\n')[1:]))
         else:
-            self.headers = None
-        self.body = StringIO(response or '')
-        self.read_lock = threading.Lock()
-        self.done = threading.Event()
-
+            self.header_buf = None
+        self.headers = None
+        self.body = TStringIO(response or '')
+    
+    def add_headers(self,headers):
+        self.header_buf.append(headers)
+    
+    def add_body(self,body):
+        if self.header_buf:
+            self.header_buf.done.set()
+        self.body.append(body)
+    
     def seek(self,pos,from_what=0):
         self.body.seek(pos,from_what)
 
     def read(self,size=-1):
-        with self.read_lock:
-            pos = self.body.tell()
-            s = self.body.read(size)
-        if size == -1 or len(s) < size:
-            self.done.wait()
-            with self.read_lock:
-                self.seek(pos)
-                return self.body.read(size)
-        return s
-    
+        return self.body.read(size)
+     
     def info(self):
+        if not self.headers and self.header_buf:
+            self.header_buf.seek(0)
+            self.headers = mimetools.Message( self.header_buf )
         return self.headers
 
     def getcode(self):
         return self.result
     
     def _complete(self):
-        self.done.set()
+        self.body.done.set()
 
 def version():
     return "v0.1.0"
