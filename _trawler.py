@@ -106,7 +106,7 @@ class Connection(object):
         del self.ack_callbacks[reply.req_id]
 
     def nack(self, reply):
-        self.ack(self, reply)
+        self.ack(reply)
         self.callbacks[reply.req_id](Response(result=reply.result))
         del self.callbacks[reply.req_id]
 
