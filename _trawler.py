@@ -118,10 +118,10 @@ class Connection(object):
             self.responses[req_id] = response
             self.callbacks[req_id](response)
             del self.callbacks[req_id]
-        elif reply.headers:
+        elif reply.headers and len(reply.headers) > 0:
             response = self.responses[req_id]
             response.add_headers(reply.headers)
-        elif reply.response:
+        elif reply.response and len(reply.response) > 0:
             response = self.responses[req_id]
             response.add_body(reply.response)
         if not reply.continued:
@@ -264,11 +264,15 @@ class Response():
     def seek(self,pos,from_what=0):
         self.body.seek(pos,from_what)
 
+    def tell(self):
+        return self.body.tell()
+    
     def read(self,size=-1):
         return self.body.read(size)
-     
+ 
     def info(self):
-        if not self.headers and self.header_buf:
+        if (not self.headers ) and self.header_buf:
+            self.header_buf.done.wait()
             self.header_buf.seek(0)
             self.headers = mimetools.Message( self.header_buf )
         return self.headers
