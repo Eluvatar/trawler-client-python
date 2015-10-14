@@ -59,11 +59,11 @@ class Connection(object):
     def worker(self):
         qsock = zmq.Context.instance().socket(zmq.PULL)
         qsock.bind("inproc://request_queue-"+str(id(self)))
-        poller = zmq.Poller()
-        tsock = zmq.Context.instance().socket(zmq.DEALER)
-        poller.register(tsock, zmq.POLLIN)
-        poller.register(qsock, zmq.POLLIN)
         while(True):
+            poller = zmq.Poller()
+            tsock = zmq.Context.instance().socket(zmq.DEALER)
+            poller.register(tsock, zmq.POLLIN)
+            poller.register(qsock, zmq.POLLIN)
             self.opening.wait()
             self.open(tsock)
             self.login(tsock)
