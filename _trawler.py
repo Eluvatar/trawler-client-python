@@ -1,4 +1,4 @@
-#    Copyright 2013-2014 Eluvatar
+#    Copyright 2013-2015 Eluvatar
 #
 #    This file is part of Trawler.
 #
