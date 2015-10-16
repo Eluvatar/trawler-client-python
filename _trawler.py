@@ -224,14 +224,22 @@ class TStringIO(StringIO):
     
     def append(self,append_str):
             with self.lock:
-                pos = self.tell()
+                pos = StringIO.tell(self)
                 self.seek(0,2)
                 self.write(append_str)
                 self.seek(pos)
-    
+
+    def tell(self):
+        with self.lock:
+            pos = StringIO.tell(self)
+            if pos < len(self.getvalue())-1:
+                return pos
+        self.done.wait()
+        return StringIO.tell(self)
+
     def read(self,size=-1):
         with self.lock:
-            pos = self.tell()
+            pos = StringIO.tell(self)
             s = StringIO.read(self,size)
         if not self.done.isSet() and ( size == -1 or len(s) < size):
             self.done.wait()
@@ -239,7 +247,7 @@ class TStringIO(StringIO):
                 self.seek(pos)
                 return StringIO.read(self,size)
         return s
-
+    
 class Response():
     """
     A Response from NationStates.net via Trawler
@@ -262,6 +270,7 @@ class Response():
         self.body.append(body)
     
     def seek(self,pos,from_what=0):
+        self.body.done.wait()
         self.body.seek(pos,from_what)
 
     def tell(self):
