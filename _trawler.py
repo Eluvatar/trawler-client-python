@@ -148,11 +148,10 @@ class Connection(object):
         tsock.close()
 
     def require_open(dep_fn):
-        def impl_fn(*args, **kwargs):
-            self=args[0]
+        def impl_fn(self, *args, **kwargs):
             self.opening.set()
             self.opened.wait()
-            return dep_fn(*args, **kwargs)
+            return dep_fn(self, *args, **kwargs)
         return impl_fn
 
     def open(self, tsock):
