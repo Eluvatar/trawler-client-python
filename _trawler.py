@@ -291,6 +291,7 @@ class Response():
         return self.result
     
     def _complete(self):
+        self.header_buf.done.set()
         self.body.done.set()
 
 def version():
