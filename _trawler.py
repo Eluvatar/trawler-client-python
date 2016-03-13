@@ -65,10 +65,11 @@ class Connection(object):
             poller.register(tsock, zmq.POLLIN)
             poller.register(qsock, zmq.POLLIN)
             self.opening.wait()
+            self.opening.clear()
             self.open(tsock)
             self.login(tsock)
             self.opened.set()
-            while is_open(tsock):
+            while zmq and is_open(tsock):
                 socks = dict(poller.poll())
                 if qsock in socks and socks[qsock] == zmq.POLLIN:
                     qsock.recv()
@@ -78,8 +79,6 @@ class Connection(object):
                         self.queue.task_done()
                 if tsock in socks and socks[tsock] == zmq.POLLIN:
                     self.receive(tsock)
-            self.opening.clear()
-            self.opened.clear()
 
     def login(self, tsock):
         login_message = protocol.Login(user_agent=self.user_agent)
@@ -135,6 +134,7 @@ class Connection(object):
         for req_id in self.callbacks.keys():
             self.callbacks[req_id](Response(result=reply.result))
             del self.callbacks[req_id]
+        self.opened.clear()
         tsock.close()
 
     def invalid(self, reply, tsock):
@@ -144,6 +144,7 @@ class Connection(object):
         for req_id in self.callbacks.keys():
             self.callbacks[req_id](Response(result=500))
             del self.callbacks[req_id]
+        self.opened.clear()
         tsock.close()
 
     def require_open(dep_fn):
@@ -171,7 +172,7 @@ class Connection(object):
         return ret[0]
 
     def is_open(self):
-        return self.enqueue(is_open)
+        return self.opened.is_set() and self.enqueue(is_open)
 
     def __nonzero__(self):
         return self.is_open()
