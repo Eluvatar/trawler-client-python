@@ -239,13 +239,14 @@ class TStringIO(StringIO):
 
     def read(self,size=-1):
         with self.lock:
-            pos = StringIO.tell(self)
             s = StringIO.read(self,size)
-        if not self.done.isSet() and ( size == -1 or len(s) < size):
-            self.done.wait()
+            if self.done.isSet() or ( size > 0 and len(s) >= size ):
+                return s
+        while len(s) < size:
             with self.lock:
-                self.seek(pos)
-                return StringIO.read(self,size)
+                if self.done.isSet():
+                    return s
+                s += StringIO.read(self,size-len(s))
         return s
     
 class Response():
@@ -290,7 +291,8 @@ class Response():
         return self.result
     
     def _complete(self):
-        self.header_buf.done.set()
+        if self.header_buf is not None:
+            self.header_buf.done.set()
         self.body.done.set()
 
 def version():
