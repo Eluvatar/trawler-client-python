@@ -244,9 +244,9 @@ class TStringIO(StringIO):
                 return s
         while len(s) < size:
             with self.lock:
+                s += StringIO.read(self,size-len(s))
                 if self.done.isSet():
                     return s
-                s += StringIO.read(self,size-len(s))
         return s
     
 class Response():
