@@ -242,7 +242,7 @@ class TStringIO(StringIO):
             s = StringIO.read(self,size)
             if self.done.isSet() or ( size > 0 and len(s) >= size ):
                 return s
-        while len(s) < size:
+        while size < 0 or len(s) < size:
             with self.lock:
                 s += StringIO.read(self,size-len(s))
                 if self.done.isSet():
