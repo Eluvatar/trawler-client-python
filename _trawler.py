@@ -219,19 +219,21 @@ class Connection(object):
 class TStringIO(StringIO):
     def __init__(self, *args, **kwargs):
         StringIO.__init__(self, *args, **kwargs)
-        self.lock = threading.Lock()
+        self.cond = threading.Condition()
         self.done = threading.Event()
     
     def append(self,append_str):
-            with self.lock:
+            with self.cond:
                 pos = StringIO.tell(self)
                 self.seek(0,2)
                 self.write(append_str)
                 self.seek(pos)
+                self.cond.notify()
 
     def tell(self):
-        with self.lock:
+        with self.cond:
             pos = StringIO.tell(self)
+            # TODO this may lead to horrible performance, work on that
             if pos < len(self.getvalue())-1:
                 return pos
         self.done.wait()
@@ -240,12 +242,13 @@ class TStringIO(StringIO):
     def read(self,size=-1):
         if size < 0:
             self.done.wait()
-        with self.lock:
+        with self.cond:
             s = StringIO.read(self,size)
             if self.done.isSet() or len(s) >= size:
                 return s
         while len(s) < size:
-            with self.lock:
+            with self.cond:
+                cond.wait()
                 s += StringIO.read(self,size-len(s))
                 if self.done.isSet():
                     return s
