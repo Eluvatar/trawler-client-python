@@ -238,11 +238,13 @@ class TStringIO(StringIO):
         return StringIO.tell(self)
 
     def read(self,size=-1):
+        if size < 0:
+            self.done.wait()
         with self.lock:
             s = StringIO.read(self,size)
-            if self.done.isSet() or ( size > 0 and len(s) >= size ):
+            if self.done.isSet() or len(s) >= size:
                 return s
-        while size < 0 or len(s) < size:
+        while len(s) < size:
             with self.lock:
                 s += StringIO.read(self,size-len(s))
                 if self.done.isSet():
