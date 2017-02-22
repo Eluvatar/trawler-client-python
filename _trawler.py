@@ -223,12 +223,12 @@ class TStringIO(StringIO):
         self.done = threading.Event()
     
     def append(self,append_str):
-            with self.cond:
-                pos = StringIO.tell(self)
-                self.seek(0,2)
-                self.write(append_str)
-                self.seek(pos)
-                self.cond.notify()
+        with self.cond:
+            pos = StringIO.tell(self)
+            self.seek(0,2)
+            self.write(append_str)
+            self.seek(pos)
+            self.cond.notify()
 
     def tell(self):
         with self.cond:
@@ -246,13 +246,18 @@ class TStringIO(StringIO):
             s = StringIO.read(self,size)
             if self.done.isSet() or len(s) >= size:
                 return s
-        while len(s) < size:
-            with self.cond:
-                cond.wait()
+            while len(s) < size:
+                self.cond.wait()
                 s += StringIO.read(self,size-len(s))
                 if self.done.isSet():
                     return s
         return s
+    
+    def complete(self):
+        if not self.done.isSet():
+            with self.cond:
+                self.done.set()
+                self.cond.notify()
     
 class Response():
     """
@@ -271,11 +276,12 @@ class Response():
         self.header_buf.append(headers)
     
     def add_body(self,body):
-        if self.header_buf:
-            self.header_buf.done.set()
+        if self.header_buf is not None:
+            self.header_buf.complete()
         self.body.append(body)
     
     def seek(self,pos,from_what=0):
+        # TODO support seek before done
         self.body.done.wait()
         self.body.seek(pos,from_what)
 
@@ -286,7 +292,7 @@ class Response():
         return self.body.read(size)
  
     def info(self):
-        if (not self.headers ) and self.header_buf:
+        if (self.headers is None) and self.header_buf:
             self.header_buf.done.wait()
             self.header_buf.seek(0)
             self.headers = mimetools.Message( self.header_buf )
@@ -297,8 +303,8 @@ class Response():
     
     def _complete(self):
         if self.header_buf is not None:
-            self.header_buf.done.set()
-        self.body.done.set()
+            self.header_buf.complete()
+        self.body.complete()
 
 def version():
     return "v0.2.0"
