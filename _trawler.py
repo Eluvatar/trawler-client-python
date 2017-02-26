@@ -314,4 +314,5 @@ class Response(object):
         self.body.complete()
 
 def version():
-    return "v0.2.0"
+    """Return version string"""
+    return "v0.2.1"
