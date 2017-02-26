@@ -19,19 +19,21 @@
   this module directly, import the 'trawler' module instead.
 """
 
-import trawler_pb2 as protocol
-
-import zmq
 import threading
 from Queue import Queue
-from collections import namedtuple
 from StringIO import StringIO
 import mimetools
 
+import zmq
+
+from . import trawler_pb2 as protocol
+
 def is_open(tsock):
+    """Test if tsock is closed"""
     return not tsock.closed
 
-def kwargs_filter(*args, **kwargs):
+def kwargs_filter(*_, **kwargs):
+    """return only keyword arguments with a non-false value"""
     kwargs2 = dict((k, v) for k, v in kwargs.iteritems() if v)
     return kwargs2
 
@@ -57,9 +59,10 @@ class Connection(object):
         thread.start()
 
     def worker(self):
+        """Worker thread event loop"""
         qsock = zmq.Context.instance().socket(zmq.PULL)
         qsock.bind("inproc://request_queue-"+str(id(self)))
-        while(True):
+        while True:
             poller = zmq.Poller()
             tsock = zmq.Context.instance().socket(zmq.DEALER)
             poller.register(tsock, zmq.POLLIN)
@@ -81,24 +84,26 @@ class Connection(object):
                     self.receive(tsock)
 
     def login(self, tsock):
+        "log in to trawler daemon by creating a Login message and sending it"
         login_message = protocol.Login(user_agent=self.user_agent)
         tsock.send(login_message.SerializeToString())
 
-    assert(protocol.Reply.Response == 0)
-    assert(protocol.Reply.Ack == 1) 
-    assert(protocol.Reply.Nack == 2)
+    assert protocol.Reply.Response == 0
+    assert protocol.Reply.Ack == 1
+    assert protocol.Reply.Nack == 2
     def receive(self, tsock):
+        "receive a Reply from the trawler daemon and handle it appropriately"
         reply = protocol.Reply()
         reply.ParseFromString(tsock.recv_multipart()[-1])
         # TODO print reply in debug mode of some kind
         # print reply
-        if( reply.reply_type < 0 or reply.reply_type > 2 ):
-            if( reply.reply_type == protocol.Reply.Logout ):
+        if reply.reply_type < 0 or reply.reply_type > 2:
+            if reply.reply_type == protocol.Reply.Logout:
                 self.logout(reply, tsock)
             else:
                 self.invalid(reply, tsock)
             return
-        [ self.response, self.ack, self.nack ][reply.reply_type](reply)
+        [self.response, self.ack, self.nack][reply.reply_type](reply)
 
     def ack(self, reply):
         self.ack_callbacks[reply.req_id](reply.result)
@@ -124,29 +129,30 @@ class Connection(object):
             response = self.responses[req_id]
             response.add_body(reply.response)
         if not reply.continued:
-            self.responses[req_id]._complete()
+            self.responses[req_id].complete()
             del self.responses[req_id]
 
     def logout(self, reply, tsock):
-        for req_id in self.ack_callbacks.keys():
+        for req_id in self.ack_callbacks:
             self.ack_callbacks[req_id](reply.result)
             del self.ack_callbacks[req_id]
-        for req_id in self.callbacks.keys():
+        for req_id in self.callbacks:
             self.callbacks[req_id](Response(result=reply.result))
             del self.callbacks[req_id]
         self.opened.clear()
         tsock.close()
 
-    def invalid(self, reply, tsock):
-        for req_id in self.ack_callbacks.keys():
+    def invalid(self, _, tsock):
+        for req_id in self.ack_callbacks:
             self.ack_callbacks[req_id](500)
             del self.ack_callbacks[req_id]
-        for req_id in self.callbacks.keys():
+        for req_id in self.callbacks:
             self.callbacks[req_id](Response(result=500))
             del self.callbacks[req_id]
         self.opened.clear()
         tsock.close()
 
+    @staticmethod
     def require_open(dep_fn):
         def impl_fn(self, *args, **kwargs):
             self.opening.set()
@@ -192,8 +198,9 @@ class Connection(object):
             self.callbacks[req_id] = callback
             self.ack_callbacks[req_id] = ack_fn
             kwf = kwargs_filter
-            req = protocol.Request(**kwf(id=req_id,method=method,path=path,
-                                         query=query,session=session,headers=headers))
+            req = protocol.Request(**kwf(id=req_id, method=method, path=path,
+                                         query=query, session=session,
+                                         headers=headers))
             tsock.send(req.SerializeToString())
         self.enqueue(send_fn)
         done.wait()
@@ -221,11 +228,11 @@ class TStringIO(StringIO):
         StringIO.__init__(self, *args, **kwargs)
         self.cond = threading.Condition()
         self.done = threading.Event()
-    
-    def append(self,append_str):
+
+    def append(self, append_str):
         with self.cond:
             pos = StringIO.tell(self)
-            self.seek(0,2)
+            self.seek(0, 2)
             self.write(append_str)
             self.seek(pos)
             self.cond.notify()
@@ -239,27 +246,27 @@ class TStringIO(StringIO):
         self.done.wait()
         return StringIO.tell(self)
 
-    def read(self,size=-1):
+    def read(self, size=-1):
         if size < 0:
             self.done.wait()
         with self.cond:
-            s = StringIO.read(self,size)
-            if self.done.isSet() or len(s) >= size:
-                return s
-            while len(s) < size:
+            res = StringIO.read(self, size)
+            if self.done.isSet() or len(res) >= size:
+                return res
+            while len(res) < size:
                 self.cond.wait()
-                s += StringIO.read(self,size-len(s))
+                res += StringIO.read(self, size-len(res))
                 if self.done.isSet():
-                    return s
-        return s
-    
+                    return res
+        return res
+
     def complete(self):
         if not self.done.isSet():
             with self.cond:
                 self.done.set()
                 self.cond.notify()
-    
-class Response():
+
+class Response(object):
     """
     A Response from NationStates.net via Trawler
     """
@@ -271,37 +278,37 @@ class Response():
             self.header_buf = None
         self.headers = None
         self.body = TStringIO(response or '')
-    
-    def add_headers(self,headers):
+
+    def add_headers(self, headers):
         self.header_buf.append(headers)
-    
-    def add_body(self,body):
+
+    def add_body(self, body):
         if self.header_buf is not None:
             self.header_buf.complete()
         self.body.append(body)
-    
-    def seek(self,pos,from_what=0):
+
+    def seek(self, pos, from_what=0):
         # TODO support seek before done
         self.body.done.wait()
-        self.body.seek(pos,from_what)
+        self.body.seek(pos, from_what)
 
     def tell(self):
         return self.body.tell()
-    
-    def read(self,size=-1):
+
+    def read(self, size=-1):
         return self.body.read(size)
- 
+
     def info(self):
         if (self.headers is None) and self.header_buf:
             self.header_buf.done.wait()
             self.header_buf.seek(0)
-            self.headers = mimetools.Message( self.header_buf )
+            self.headers = mimetools.Message(self.header_buf)
         return self.headers
 
     def getcode(self):
         return self.result
-    
-    def _complete(self):
+
+    def complete(self):
         if self.header_buf is not None:
             self.header_buf.complete()
         self.body.complete()

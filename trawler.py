@@ -26,7 +26,7 @@
   as an exit code: T_OK is zero.
 """
 
-import _trawler
+from . import _trawler
 
 def _instance():
     return default_connection()
@@ -72,20 +72,40 @@ def request_async(*args, **kwargs):
 
     The method and path arguments are required. The rest are not.
 
-    This method blocks. (It will not return until the response is
-    available, and it will return the response.)
+    This method blocks. (It will not return until the request is acknowledged
+    by the trawler daemon. The callback will be invoked asynchronously.)
     """
     return _instance().request_async(*args, **kwargs)
 def request_headers_async(*args, **kwargs):
+    """
+    Issues a request given keyword arguments for callback (a function 
+    which takes a single Response object argument), method (an RFC 2616
+    method string), path (the part after the domain and before any query
+    string), query (the query string, when part of a GET request, is also
+    known as a search string), session (the cookie value to send), making
+    sure to return the headers as well.
+
+    The method and path arguments are required. The rest are not.
+
+    This method blocks. (It will not return until the request is acknowledged
+    by the trawler daemon. The callback will be invoked asynchronously.)
+    """
     return _instance().request_headers_async(*args, **kwargs)
 
 def connection(user_agent):
+    """Return a connection object given a particular user_agent to the default
+    localhost:5557 trawler daemon"""
     return _trawler.Connection('localhost', 5557, user_agent)
 
 def version():
+    """Return the client library version string"""
     return _trawler.version()
 
 def default_connection():
+    """Return a connection object given the default user_agent to the default
+    localhost:5557 trawler daemon.
+
+    Note: the default user_agent must be set as a module-level attribute."""
     if not default_connection.conn:
         default_connection.conn = \
             connection(default_user_agent())
